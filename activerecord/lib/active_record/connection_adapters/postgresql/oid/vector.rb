@@ -1,8 +1,10 @@
+# frozen_string_literal: true
+
 module ActiveRecord
   module ConnectionAdapters
     module PostgreSQL
       module OID # :nodoc:
-        class Vector < Type::Value
+        class Vector < Type::Value # :nodoc:
           attr_reader :delim, :subtype
 
           # +delim+ corresponds to the `typdelim` column in the pg_types
@@ -16,7 +18,7 @@ module ActiveRecord
           # FIXME: this should probably split on +delim+ and use +subtype+
           # to cast the values.  Unfortunately, the current Rails behavior
           # is to just return the string.
-          def type_cast(value)
+          def cast(value)
             value
           end
         end

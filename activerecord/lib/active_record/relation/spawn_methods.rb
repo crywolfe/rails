@@ -1,17 +1,19 @@
-require 'active_support/core_ext/hash/except'
-require 'active_support/core_ext/hash/slice'
-require 'active_record/relation/merger'
+# frozen_string_literal: true
+
+require "active_support/core_ext/hash/except"
+require "active_support/core_ext/hash/slice"
+require "active_record/relation/merger"
 
 module ActiveRecord
   module SpawnMethods
-
     # This is overridden by Associations::CollectionProxy
     def spawn #:nodoc:
-      clone
+      already_in_scope? ? klass.all : clone
     end
 
-    # Merges in the conditions from <tt>other</tt>, if <tt>other</tt> is an <tt>ActiveRecord::Relation</tt>.
+    # Merges in the conditions from <tt>other</tt>, if <tt>other</tt> is an ActiveRecord::Relation.
     # Returns an array representing the intersection of the resulting records with <tt>other</tt>, if <tt>other</tt> is an array.
+    #
     #   Post.where(published: true).joins(:comments).merge( Comment.where(spam: false) )
     #   # Performs a single join query with both where conditions.
     #
@@ -26,22 +28,26 @@ module ActiveRecord
     #   # => Post.where(published: true).joins(:comments)
     #
     # This is mainly intended for sharing common conditions between multiple associations.
-    def merge(other)
+    def merge(other, *rest)
       if other.is_a?(Array)
-        to_a & other
+        records & other
       elsif other
-        spawn.merge!(other)
+        spawn.merge!(other, *rest)
       else
-        self
+        raise ArgumentError, "invalid argument: #{other.inspect}."
       end
     end
 
-    def merge!(other) # :nodoc:
-      if !other.is_a?(Relation) && other.respond_to?(:to_proc)
+    def merge!(other, *rest) # :nodoc:
+      options = rest.extract_options!
+      if other.is_a?(Hash)
+        Relation::HashMerger.new(self, other, options[:rewhere]).merge
+      elsif other.is_a?(Relation)
+        Relation::Merger.new(self, other, options[:rewhere]).merge
+      elsif other.respond_to?(:to_proc)
         instance_exec(&other)
       else
-        klass = other.is_a?(Hash) ? Relation::HashMerger : Relation::Merger
-        klass.new(self, other).merge
+        raise ArgumentError, "#{other.inspect} is not an ActiveRecord::Relation"
       end
     end
 
@@ -58,17 +64,13 @@ module ActiveRecord
     #   Post.order('id asc').only(:where)         # discards the order condition
     #   Post.order('id asc').only(:where, :order) # uses the specified order
     def only(*onlies)
-      if onlies.any? { |o| o == :where }
-        onlies << :bind
-      end
       relation_with values.slice(*onlies)
     end
 
     private
-
-      def relation_with(values) # :nodoc:
-        result = Relation.create(klass, table, values)
-        result.extend(*extending_values) if extending_values.any?
+      def relation_with(values)
+        result = spawn
+        result.instance_variable_set(:@values, values)
         result
       end
   end

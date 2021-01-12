@@ -1,47 +1,45 @@
+# frozen_string_literal: true
+
+require "securerandom"
+
 module SecureRandom
-  UUID_DNS_NAMESPACE  = "k\xA7\xB8\x10\x9D\xAD\x11\xD1\x80\xB4\x00\xC0O\xD40\xC8" #:nodoc:
-  UUID_URL_NAMESPACE  = "k\xA7\xB8\x11\x9D\xAD\x11\xD1\x80\xB4\x00\xC0O\xD40\xC8" #:nodoc:
-  UUID_OID_NAMESPACE  = "k\xA7\xB8\x12\x9D\xAD\x11\xD1\x80\xB4\x00\xC0O\xD40\xC8" #:nodoc:
-  UUID_X500_NAMESPACE = "k\xA7\xB8\x14\x9D\xAD\x11\xD1\x80\xB4\x00\xC0O\xD40\xC8" #:nodoc:
-  
-  # Generates a v5 non-random UUID (Universally Unique IDentifier).
+  BASE58_ALPHABET = ("0".."9").to_a + ("A".."Z").to_a + ("a".."z").to_a - ["0", "O", "I", "l"]
+  BASE36_ALPHABET = ("0".."9").to_a + ("a".."z").to_a
+
+  # SecureRandom.base58 generates a random base58 string.
   #
-  # Using Digest::MD5 generates version 3 UUIDs; Digest::SHA1 generates version 5 UUIDs.
-  # ::uuid_from_hash always generates the same UUID for a given name and namespace combination.
+  # The argument _n_ specifies the length of the random string to be generated.
   #
-  # See RFC 4122 for details of UUID at: http://www.ietf.org/rfc/rfc4122.txt
-  def self.uuid_from_hash(hash_class, uuid_namespace, name)
-    if hash_class == Digest::MD5
-      version = 3
-    elsif hash_class == Digest::SHA1
-      version = 5
-    else
-      raise ArgumentError, "Expected Digest::SHA1 or Digest::MD5, got #{hash_class.name}."
-    end
-
-    hash = hash_class.new
-    hash.update(uuid_namespace)
-    hash.update(name)
-
-    ary = hash.digest.unpack('NnnnnN')
-    ary[2] = (ary[2] & 0x0FFF) | (version << 12)
-    ary[3] = (ary[3] & 0x3FFF) | 0x8000
-
-    "%08x-%04x-%04x-%04x-%04x%08x" % ary
+  # If _n_ is not specified or is +nil+, 16 is assumed. It may be larger in the future.
+  #
+  # The result may contain alphanumeric characters except 0, O, I and l.
+  #
+  #   p SecureRandom.base58 # => "4kUgL2pdQMSCQtjE"
+  #   p SecureRandom.base58(24) # => "77TMHrHJFvFDwodq8w7Ev2m7"
+  def self.base58(n = 16)
+    SecureRandom.random_bytes(n).unpack("C*").map do |byte|
+      idx = byte % 64
+      idx = SecureRandom.random_number(58) if idx >= 58
+      BASE58_ALPHABET[idx]
+    end.join
   end
 
-  # Convenience method for ::uuid_from_hash using Digest::MD5.
-  def self.uuid_v3(uuid_namespace, name)
-    self.uuid_from_hash(Digest::MD5, uuid_namespace, name)
-  end
-
-  # Convenience method for ::uuid_from_hash using Digest::SHA1.
-  def self.uuid_v5(uuid_namespace, name)
-    self.uuid_from_hash(Digest::SHA1, uuid_namespace, name)
-  end
-
-  class << self
-    # Alias for ::uuid.
-    alias_method :uuid_v4, :uuid
+  # SecureRandom.base36 generates a random base36 string in lowercase.
+  #
+  # The argument _n_ specifies the length of the random string to be generated.
+  #
+  # If _n_ is not specified or is +nil+, 16 is assumed. It may be larger in the future.
+  # This method can be used over +base58+ if a deterministic case key is necessary.
+  #
+  # The result will contain alphanumeric characters in lowercase.
+  #
+  #   p SecureRandom.base36 # => "4kugl2pdqmscqtje"
+  #   p SecureRandom.base36(24) # => "77tmhrhjfvfdwodq8w7ev2m7"
+  def self.base36(n = 16)
+    SecureRandom.random_bytes(n).unpack("C*").map do |byte|
+      idx = byte % 64
+      idx = SecureRandom.random_number(36) if idx >= 36
+      BASE36_ALPHABET[idx]
+    end.join
   end
 end

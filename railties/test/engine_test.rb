@@ -1,4 +1,6 @@
-require 'abstract_unit'
+# frozen_string_literal: true
+
+require "abstract_unit"
 
 class EngineTest < ActiveSupport::TestCase
   test "reports routes as available only if they're actually present" do
@@ -9,6 +11,17 @@ class EngineTest < ActiveSupport::TestCase
       end
     end
 
-    assert !engine.routes?
+    assert_not_predicate engine, :routes?
+  end
+
+  def test_application_can_be_subclassed
+    klass = Class.new(Rails::Application) do
+      attr_reader :hello
+      def initialize
+        @hello = "world"
+        super
+      end
+    end
+    assert_equal "world", klass.instance.hello
   end
 end

@@ -1,26 +1,28 @@
+# frozen_string_literal: true
+
+require "ipaddr"
+
 module ActiveRecord
   module ConnectionAdapters
     module PostgreSQL
       module OID # :nodoc:
-        class Cidr < Type::Value
+        class Cidr < Type::Value # :nodoc:
           def type
             :cidr
           end
 
           def type_cast_for_schema(value)
-            subnet_mask = value.instance_variable_get(:@mask_addr)
-
             # If the subnet mask is equal to /32, don't output it
-            if subnet_mask == (2**32 - 1)
-              "\"#{value.to_s}\""
+            if value.prefix == 32
+              "\"#{value}\""
             else
-              "\"#{value.to_s}/#{subnet_mask.to_s(2).count('1')}\""
+              "\"#{value}/#{value.prefix}\""
             end
           end
 
-          def type_cast_for_database(value)
+          def serialize(value)
             if IPAddr === value
-              "#{value.to_s}/#{value.instance_variable_get(:@mask_addr).to_s(2).count('1')}"
+              "#{value}/#{value.prefix}"
             else
               value
             end

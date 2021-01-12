@@ -1,13 +1,18 @@
-require 'fileutils'
-require 'active_support/core_ext/hash/keys'
-require 'active_support/core_ext/object/blank'
-require 'active_support/key_generator'
-require 'active_support/message_verifier'
-require 'rails/engine'
+# frozen_string_literal: true
+
+require "yaml"
+require "active_support/core_ext/hash/keys"
+require "active_support/core_ext/object/blank"
+require "active_support/key_generator"
+require "active_support/message_verifier"
+require "active_support/encrypted_configuration"
+require "active_support/hash_with_indifferent_access"
+require "active_support/configuration_file"
+require "rails/engine"
+require "rails/secrets"
 
 module Rails
-  # In Rails 3.0, a Rails::Application object was introduced which is nothing more than
-  # an Engine but with the responsibility of coordinating the whole boot process.
+  # An Engine with the responsibility of coordinating the whole boot process.
   #
   # == Initialization
   #
@@ -40,7 +45,7 @@ module Rails
   # process. From the moment you require "config/application.rb" in your app,
   # the booting process goes like this:
   #
-  #   1)  require "config/boot.rb" to setup load paths
+  #   1)  require "config/boot.rb" to set up load paths
   #   2)  require railties and engines
   #   3)  Define Rails.application as "class MyApp::Application < Rails::Application"
   #   4)  Run config.before_configuration callbacks
@@ -73,21 +78,34 @@ module Rails
   # on one of the applications to create a copy of the application which shares
   # the configuration.
   #
-  # If you decide to define rake tasks, runners, or initializers in an
-  # application other than +Rails.application+, then you must run those
-  # these manually.
+  # If you decide to define Rake tasks, runners, or initializers in an
+  # application other than +Rails.application+, then you must run them manually.
   class Application < Engine
-    autoload :Bootstrap,              'rails/application/bootstrap'
-    autoload :Configuration,          'rails/application/configuration'
-    autoload :DefaultMiddlewareStack, 'rails/application/default_middleware_stack'
-    autoload :Finisher,               'rails/application/finisher'
-    autoload :Railties,               'rails/engine/railties'
-    autoload :RoutesReloader,         'rails/application/routes_reloader'
+    autoload :Bootstrap,              "rails/application/bootstrap"
+    autoload :Configuration,          "rails/application/configuration"
+    autoload :DefaultMiddlewareStack, "rails/application/default_middleware_stack"
+    autoload :Finisher,               "rails/application/finisher"
+    autoload :Railties,               "rails/engine/railties"
+    autoload :RoutesReloader,         "rails/application/routes_reloader"
 
     class << self
       def inherited(base)
         super
-        base.instance
+        Rails.app_class = base
+        add_lib_to_load_path!(find_root(base.called_from))
+        ActiveSupport.run_load_hooks(:before_configuration, base)
+      end
+
+      def instance
+        super.run_load_hooks!
+      end
+
+      def create(initial_variable_values = {}, &block)
+        new(initial_variable_values, &block).run_load_hooks!
+      end
+
+      def find_root(from)
+        find_root_with_flag "config.ru", from, Dir.pwd
       end
 
       # Makes the +new+ method public.
@@ -100,7 +118,7 @@ module Rails
 
     attr_accessor :assets, :sandbox
     alias_method :sandbox?, :sandbox
-    attr_reader :reloaders
+    attr_reader :reloaders, :reloader, :executor
 
     delegate :default_url_options, :default_url_options=, to: :routes
 
@@ -116,19 +134,15 @@ module Rails
       @ordered_railties  = nil
       @railties          = nil
       @message_verifiers = {}
+      @ran_load_hooks    = false
 
-      Rails.application ||= self
+      @executor          = Class.new(ActiveSupport::Executor)
+      @reloader          = Class.new(ActiveSupport::Reloader)
+      @reloader.executor = @executor
 
-      add_lib_to_load_path!
-      ActiveSupport.run_load_hooks(:before_configuration, self)
-
-      initial_variable_values.each do |variable_name, value|
-        if INITIAL_VARIABLES.include?(variable_name)
-          instance_variable_set("@#{variable_name}", value)
-        end
-      end
-
-      instance_eval(&block) if block_given?
+      # are these actually used?
+      @initial_variable_values = initial_variable_values
+      @block = block
     end
 
     # Returns true if the application is initialized.
@@ -136,12 +150,18 @@ module Rails
       @initialized
     end
 
-    # Implements call according to the Rack API. It simply
-    # dispatches the request to the underlying middleware stack.
-    def call(env)
-      env["ORIGINAL_FULLPATH"] = build_original_fullpath(env)
-      env["ORIGINAL_SCRIPT_NAME"] = env["SCRIPT_NAME"]
-      super(env)
+    def run_load_hooks! # :nodoc:
+      return self if @ran_load_hooks
+      @ran_load_hooks = true
+
+      @initial_variable_values.each do |variable_name, value|
+        if INITIAL_VARIABLES.include?(variable_name)
+          instance_variable_set("@#{variable_name}", value)
+        end
+      end
+
+      instance_eval(&@block) if @block
+      self
     end
 
     # Reload application routes regardless if they changed or not.
@@ -149,17 +169,13 @@ module Rails
       routes_reloader.reload!
     end
 
-    # Return the application's KeyGenerator
+    # Returns the application's KeyGenerator
     def key_generator
       # number of iterations selected based on consultation with the google security
       # team. Details at https://github.com/rails/rails/pull/6952#issuecomment-7661220
-      @caching_key_generator ||=
-        if secrets.secret_key_base
-          key_generator = ActiveSupport::KeyGenerator.new(secrets.secret_key_base, iterations: 1000)
-          ActiveSupport::CachingKeyGenerator.new(key_generator)
-        else
-          ActiveSupport::LegacyKeyGenerator.new(config.secret_token)
-        end
+      @caching_key_generator ||= ActiveSupport::CachingKeyGenerator.new(
+        ActiveSupport::KeyGenerator.new(secret_key_base, iterations: 1000)
+      )
     end
 
     # Returns a message verifier object.
@@ -187,17 +203,67 @@ module Rails
       end
     end
 
+    # Convenience for loading config/foo.yml for the current Rails env.
+    #
+    # Examples:
+    #
+    #     # config/exception_notification.yml:
+    #     production:
+    #       url: http://127.0.0.1:8080
+    #       namespace: my_app_production
+    #
+    #     development:
+    #       url: http://localhost:3001
+    #       namespace: my_app_development
+    #
+    #     # config/environments/production.rb
+    #     Rails.application.configure do
+    #       config.middleware.use ExceptionNotifier, config_for(:exception_notification)
+    #     end
+    #
+    #     # You can also store configurations in a shared section which will be
+    #     # merged with the environment configuration
+    #
+    #     # config/example.yml
+    #     shared:
+    #       foo:
+    #         bar:
+    #           baz: 1
+    #
+    #     development:
+    #       foo:
+    #         bar:
+    #           qux: 2
+    #
+    #     # development environment
+    #     Rails.application.config_for(:example)[:foo][:bar]
+    #     # => { baz: 1, qux: 2 }
+    def config_for(name, env: Rails.env)
+      yaml = name.is_a?(Pathname) ? name : Pathname.new("#{paths["config"].existent.first}/#{name}.yml")
+
+      if yaml.exist?
+        require "erb"
+        all_configs    = ActiveSupport::ConfigurationFile.parse(yaml).deep_symbolize_keys
+        config, shared = all_configs[env.to_sym], all_configs[:shared]
+
+        if config.is_a?(Hash)
+          ActiveSupport::OrderedOptions.new.update(shared&.deep_merge(config) || config)
+        else
+          config || shared
+        end
+      else
+        raise "Could not load configuration. No such file - #{yaml}"
+      end
+    end
+
     # Stores some of the Rails initial environment parameters which
     # will be used by middlewares and engines to configure themselves.
     def env_config
       @app_env_config ||= begin
-        validate_secret_key_config!
-
-        super.merge({
+        super.merge(
           "action_dispatch.parameter_filter" => config.filter_parameters,
           "action_dispatch.redirect_filter" => config.filter_redirect,
-          "action_dispatch.secret_token" => config.secret_token,
-          "action_dispatch.secret_key_base" => secrets.secret_key_base,
+          "action_dispatch.secret_key_base" => secret_key_base,
           "action_dispatch.show_exceptions" => config.action_dispatch.show_exceptions,
           "action_dispatch.show_detailed_exceptions" => config.consider_all_requests_local,
           "action_dispatch.logger" => Rails.logger,
@@ -207,13 +273,26 @@ module Rails
           "action_dispatch.signed_cookie_salt" => config.action_dispatch.signed_cookie_salt,
           "action_dispatch.encrypted_cookie_salt" => config.action_dispatch.encrypted_cookie_salt,
           "action_dispatch.encrypted_signed_cookie_salt" => config.action_dispatch.encrypted_signed_cookie_salt,
-          "action_dispatch.cookies_serializer" => config.action_dispatch.cookies_serializer
-        })
+          "action_dispatch.authenticated_encrypted_cookie_salt" => config.action_dispatch.authenticated_encrypted_cookie_salt,
+          "action_dispatch.use_authenticated_cookie_encryption" => config.action_dispatch.use_authenticated_cookie_encryption,
+          "action_dispatch.encrypted_cookie_cipher" => config.action_dispatch.encrypted_cookie_cipher,
+          "action_dispatch.signed_cookie_digest" => config.action_dispatch.signed_cookie_digest,
+          "action_dispatch.cookies_serializer" => config.action_dispatch.cookies_serializer,
+          "action_dispatch.cookies_digest" => config.action_dispatch.cookies_digest,
+          "action_dispatch.cookies_rotations" => config.action_dispatch.cookies_rotations,
+          "action_dispatch.cookies_same_site_protection" => coerce_same_site_protection(config.action_dispatch.cookies_same_site_protection),
+          "action_dispatch.use_cookies_with_metadata" => config.action_dispatch.use_cookies_with_metadata,
+          "action_dispatch.content_security_policy" => config.content_security_policy,
+          "action_dispatch.content_security_policy_report_only" => config.content_security_policy_report_only,
+          "action_dispatch.content_security_policy_nonce_generator" => config.content_security_policy_nonce_generator,
+          "action_dispatch.content_security_policy_nonce_directives" => config.content_security_policy_nonce_directives,
+          "action_dispatch.permissions_policy" => config.permissions_policy,
+        )
       end
     end
 
-    # If you try to define a set of rake tasks on the instance, these will get
-    # passed up to the rake tasks defined on the application's class.
+    # If you try to define a set of Rake tasks on the instance, these will get
+    # passed up to the Rake tasks defined on the application's class.
     def rake_tasks(&block)
       self.class.rake_tasks(&block)
     end
@@ -221,7 +300,7 @@ module Rails
     # Sends the initializers to the +initializer+ method defined in the
     # Rails::Initializable module. Each Rails::Application class has its own
     # set of initializers, as defined by the Initializable module.
-    def initializer(name, opts={}, &block)
+    def initializer(name, opts = {}, &block)
       self.class.initializer(name, opts, &block)
     end
 
@@ -241,6 +320,12 @@ module Rails
     # to the +generators+ method defined in Rails::Railtie.
     def generators(&blk)
       self.class.generators(&blk)
+    end
+
+    # Sends any server called in the instance of a new application up
+    # to the +server+ method defined in Rails::Railtie.
+    def server(&blk)
+      self.class.server(&blk)
     end
 
     # Sends the +isolate_namespace+ method up to the class method.
@@ -263,8 +348,8 @@ module Rails
     # are changing config.root inside your application definition or having a custom
     # Rails application, you will need to add lib to $LOAD_PATH on your own in case
     # you need to load files in lib/ during the application configuration as well.
-    def add_lib_to_load_path! #:nodoc:
-      path = File.join config.root, 'lib'
+    def self.add_lib_to_load_path!(root) #:nodoc:
+      path = File.join root, "lib"
       if File.exist?(path) && !$LOAD_PATH.include?(path)
         $LOAD_PATH.unshift(path)
       end
@@ -286,7 +371,7 @@ module Rails
       files, dirs = config.watchable_files.dup, config.watchable_dirs.dup
 
       ActiveSupport::Dependencies.autoload_paths.each do |path|
-        dirs[path.to_s] = [:rb]
+        File.file?(path) ? files << path.to_s : dirs[path.to_s] = [:rb]
       end
 
       [files, dirs]
@@ -294,7 +379,7 @@ module Rails
 
     # Initialize the application passing the given group. By default, the
     # group is :default
-    def initialize!(group=:default) #:nodoc:
+    def initialize!(group = :default) #:nodoc:
       raise "Application has been already initialized." if @initialized
       run_initializers(group, self)
       @initialized = true
@@ -308,23 +393,17 @@ module Rails
     end
 
     def config #:nodoc:
-      @config ||= Application::Configuration.new(find_root_with_flag("config.ru", Dir.pwd))
+      @config ||= Application::Configuration.new(self.class.find_root(self.class.called_from))
     end
 
-    def config=(configuration) #:nodoc:
-      @config = configuration
-    end
+    attr_writer :config
 
-    def secrets #:nodoc:
+    def secrets
       @secrets ||= begin
         secrets = ActiveSupport::OrderedOptions.new
-        yaml = config.paths["config/secrets"].first
-        if File.exist?(yaml)
-          require "erb"
-          all_secrets = YAML.load(ERB.new(IO.read(yaml)).result) || {}
-          env_secrets = all_secrets[Rails.env]
-          secrets.merge!(env_secrets.symbolize_keys) if env_secrets
-        end
+        files = config.paths["config/secrets"].existent
+        files = files.reject { |path| path.end_with?(".enc") } unless config.read_encrypted_secrets
+        secrets.merge! Rails::Secrets.parse(files, env: Rails.env)
 
         # Fallback to config.secret_key_base if secrets.secret_key_base isn't set
         secrets.secret_key_base ||= config.secret_key_base
@@ -333,8 +412,72 @@ module Rails
       end
     end
 
-    def secrets=(secrets) #:nodoc:
-      @secrets = secrets
+    attr_writer :secrets, :credentials
+
+    # The secret_key_base is used as the input secret to the application's key generator, which in turn
+    # is used to create all MessageVerifiers/MessageEncryptors, including the ones that sign and encrypt cookies.
+    #
+    # In development and test, this is randomly generated and stored in a
+    # temporary file in <tt>tmp/development_secret.txt</tt>.
+    #
+    # In all other environments, we look for it first in ENV["SECRET_KEY_BASE"],
+    # then credentials.secret_key_base, and finally secrets.secret_key_base. For most applications,
+    # the correct place to store it is in the encrypted credentials file.
+    def secret_key_base
+      if Rails.env.development? || Rails.env.test?
+        secrets.secret_key_base ||= generate_development_secret
+      else
+        validate_secret_key_base(
+          ENV["SECRET_KEY_BASE"] || credentials.secret_key_base || secrets.secret_key_base
+        )
+      end
+    end
+
+    # Decrypts the credentials hash as kept in +config/credentials.yml.enc+. This file is encrypted with
+    # the Rails master key, which is either taken from <tt>ENV["RAILS_MASTER_KEY"]</tt> or from loading
+    # +config/master.key+.
+    # If specific credentials file exists for current environment, it takes precedence, thus for +production+
+    # environment look first for +config/credentials/production.yml.enc+ with master key taken
+    # from <tt>ENV["RAILS_MASTER_KEY"]</tt> or from loading +config/credentials/production.key+.
+    # Default behavior can be overwritten by setting +config.credentials.content_path+ and +config.credentials.key_path+.
+    def credentials
+      @credentials ||= encrypted(config.credentials.content_path, key_path: config.credentials.key_path)
+    end
+
+    # Shorthand to decrypt any encrypted configurations or files.
+    #
+    # For any file added with <tt>rails encrypted:edit</tt> call +read+ to decrypt
+    # the file with the master key.
+    # The master key is either stored in +config/master.key+ or <tt>ENV["RAILS_MASTER_KEY"]</tt>.
+    #
+    #   Rails.application.encrypted("config/mystery_man.txt.enc").read
+    #   # => "We've met before, haven't we?"
+    #
+    # It's also possible to interpret encrypted YAML files with +config+.
+    #
+    #   Rails.application.encrypted("config/credentials.yml.enc").config
+    #   # => { next_guys_line: "I don't think so. Where was it you think we met?" }
+    #
+    # Any top-level configs are also accessible directly on the return value:
+    #
+    #   Rails.application.encrypted("config/credentials.yml.enc").next_guys_line
+    #   # => "I don't think so. Where was it you think we met?"
+    #
+    # The files or configs can also be encrypted with a custom key. To decrypt with
+    # a key in the +ENV+, use:
+    #
+    #   Rails.application.encrypted("config/special_tokens.yml.enc", env_key: "SPECIAL_TOKENS")
+    #
+    # Or to decrypt with a file, that should be version control ignored, relative to +Rails.root+:
+    #
+    #   Rails.application.encrypted("config/special_tokens.yml.enc", key_path: "config/special_tokens.key")
+    def encrypted(path, key_path: "config/master.key", env_key: "RAILS_MASTER_KEY")
+      ActiveSupport::EncryptedConfiguration.new(
+        config_path: Rails.root.join(path),
+        key_path: Rails.root.join(key_path),
+        env_key: env_key,
+        raise_if_missing_key: config.require_master_key
+      )
     end
 
     def to_app #:nodoc:
@@ -346,38 +489,39 @@ module Rails
     end
 
     console do
-      require "pp"
-    end
-
-    console do
       unless ::Kernel.private_method_defined?(:y)
-        if RUBY_VERSION >= '2.0'
-          require "psych/y"
-        else
-          module ::Kernel
-            def y(*objects)
-              puts ::Psych.dump_stream(*objects)
-            end
-            private :y
-          end
-        end
+        require "psych/y"
       end
     end
 
+    # Return an array of railties respecting the order they're loaded
+    # and the order specified by the +railties_order+ config.
+    #
+    # While running initializers we need engines in reverse order here when
+    # copying migrations from railties ; we need them in the order given by
+    # +railties_order+.
     def migration_railties # :nodoc:
-      (ordered_railties & railties_without_main_app).reverse
+      ordered_railties.flatten - [self]
+    end
+
+    # Eager loads the application code.
+    def eager_load!
+      if Rails.autoloaders.zeitwerk_enabled?
+        Rails.autoloaders.each(&:eager_load)
+      else
+        super
+      end
     end
 
   protected
-
     alias :build_middleware_stack :app
 
     def run_tasks_blocks(app) #:nodoc:
       railties.each { |r| r.run_tasks_blocks(app) }
       super
-      require "rails/tasks"
+      load "rails/tasks.rb"
       task :environment do
-        ActiveSupport.on_load(:before_initialize) { config.eager_load = false }
+        ActiveSupport.on_load(:before_initialize) { config.eager_load = config.rake_eager_load }
 
         require_environment!
       end
@@ -398,9 +542,9 @@ module Rails
       super
     end
 
-    def railties_without_main_app # :nodoc:
-      @railties_without_main_app ||= Rails::Railtie.subclasses.map(&:instance) +
-        Rails::Engine.subclasses.map(&:instance)
+    def run_server_blocks(app) #:nodoc:
+      railties.each { |r| r.run_server_blocks(app) }
+      super
     end
 
     # Returns the ordered railties for this application considering railties_order.
@@ -422,13 +566,13 @@ module Rails
 
         index = order.index(:all)
         order[index] = all
-        order.reverse.flatten
+        order
       end
     end
 
     def railties_initializers(current) #:nodoc:
       initializers = []
-      ordered_railties.each do |r|
+      ordered_railties.reverse.flatten.each do |r|
         if r == self
           initializers += current
         else
@@ -443,22 +587,46 @@ module Rails
       default_stack.build_stack
     end
 
-    def build_original_fullpath(env) #:nodoc:
-      path_info    = env["PATH_INFO"]
-      query_string = env["QUERY_STRING"]
-      script_name  = env["SCRIPT_NAME"]
-
-      if query_string.present?
-        "#{script_name}#{path_info}?#{query_string}"
+    def validate_secret_key_base(secret_key_base)
+      if secret_key_base.is_a?(String) && secret_key_base.present?
+        secret_key_base
+      elsif secret_key_base
+        raise ArgumentError, "`secret_key_base` for #{Rails.env} environment must be a type of String`"
       else
-        "#{script_name}#{path_info}"
+        raise ArgumentError, "Missing `secret_key_base` for '#{Rails.env}' environment, set this string with `bin/rails credentials:edit`"
       end
     end
 
-    def validate_secret_key_config! #:nodoc:
-      if secrets.secret_key_base.blank? && config.secret_token.blank?
-        raise "Missing `secret_key_base` for '#{Rails.env}' environment, set this value in `config/secrets.yml`"
+    private
+      def generate_development_secret
+        if secrets.secret_key_base.nil?
+          key_file = Rails.root.join("tmp/development_secret.txt")
+
+          if !File.exist?(key_file)
+            random_key = SecureRandom.hex(64)
+            FileUtils.mkdir_p(key_file.dirname)
+            File.binwrite(key_file, random_key)
+          end
+
+          secrets.secret_key_base = File.binread(key_file)
+        end
+
+        secrets.secret_key_base
       end
-    end
+
+      def build_request(env)
+        req = super
+        env["ORIGINAL_FULLPATH"] = req.fullpath
+        env["ORIGINAL_SCRIPT_NAME"] = req.script_name
+        req
+      end
+
+      def build_middleware
+        config.app_middleware + super
+      end
+
+      def coerce_same_site_protection(protection)
+        protection.respond_to?(:call) ? protection : proc { protection }
+      end
   end
 end

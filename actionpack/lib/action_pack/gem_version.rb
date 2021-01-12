@@ -1,11 +1,13 @@
+# frozen_string_literal: true
+
 module ActionPack
-  # Returns the version of the currently loaded ActionPack as a <tt>Gem::Version</tt>
+  # Returns the version of the currently loaded Action Pack as a <tt>Gem::Version</tt>
   def self.gem_version
     Gem::Version.new VERSION::STRING
   end
 
   module VERSION
-    MAJOR = 4
+    MAJOR = 6
     MINOR = 2
     TINY  = 0
     PRE   = "alpha"

@@ -1,18 +1,21 @@
+# frozen_string_literal: true
+
+require "rails-dom-testing"
+require "action_dispatch/testing/assertions/response"
+require "action_dispatch/testing/assertions/routing"
+
 module ActionDispatch
   module Assertions
-    autoload :DomAssertions, 'action_dispatch/testing/assertions/dom'
-    autoload :ResponseAssertions, 'action_dispatch/testing/assertions/response'
-    autoload :RoutingAssertions, 'action_dispatch/testing/assertions/routing'
-    autoload :SelectorAssertions, 'action_dispatch/testing/assertions/selector'
-    autoload :TagAssertions, 'action_dispatch/testing/assertions/tag'
-
-    extend ActiveSupport::Concern
-
-    include DomAssertions
     include ResponseAssertions
     include RoutingAssertions
-    include SelectorAssertions
-    include TagAssertions
+    include Rails::Dom::Testing::Assertions
+
+    def html_document
+      @html_document ||= if @response.media_type&.end_with?("xml")
+        Nokogiri::XML::Document.parse(@response.body)
+      else
+        Nokogiri::HTML::Document.parse(@response.body)
+      end
+    end
   end
 end
-

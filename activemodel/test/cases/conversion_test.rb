@@ -1,6 +1,8 @@
-require 'cases/helper'
-require 'models/contact'
-require 'models/helicopter'
+# frozen_string_literal: true
+
+require "cases/helper"
+require "models/contact"
+require "models/helicopter"
 
 class ConversionTest < ActiveModel::TestCase
   test "to_model default implementation returns self" do
@@ -22,6 +24,10 @@ class ConversionTest < ActiveModel::TestCase
 
   test "to_param default implementation returns a string of ids for persisted records" do
     assert_equal "1", Contact.new(id: 1).to_param
+  end
+
+  test "to_param returns the string joined by '-'" do
+    assert_equal "abc-xyz", Contact.new(id: ["abc", "xyz"]).to_param
   end
 
   test "to_param returns nil if to_key is nil" do

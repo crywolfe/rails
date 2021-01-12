@@ -1,8 +1,10 @@
+# frozen_string_literal: true
+
 module ActiveRecord
   module AttributeMethods
     # = Active Record Attribute Methods Before Type Cast
     #
-    # <tt>ActiveRecord::AttributeMethods::BeforeTypeCast</tt> provides a way to
+    # ActiveRecord::AttributeMethods::BeforeTypeCast provides a way to
     # read the value of the attributes before typecasting and deserialization.
     #
     #   class Task < ActiveRecord::Base
@@ -27,7 +29,8 @@ module ActiveRecord
       extend ActiveSupport::Concern
 
       included do
-        attribute_method_suffix "_before_type_cast"
+        attribute_method_suffix "_before_type_cast", "_for_database"
+        attribute_method_suffix "_came_from_user?"
       end
 
       # Returns the value of the attribute identified by +attr_name+ before
@@ -43,7 +46,10 @@ module ActiveRecord
       #   task.read_attribute_before_type_cast('completed_on') # => "2012-10-21"
       #   task.read_attribute_before_type_cast(:completed_on)  # => "2012-10-21"
       def read_attribute_before_type_cast(attr_name)
-        @raw_attributes[attr_name.to_s]
+        name = attr_name.to_s
+        name = self.class.attribute_aliases[name] || name
+
+        attribute_before_type_cast(name)
       end
 
       # Returns a hash of attributes before typecasting and deserialization.
@@ -57,15 +63,22 @@ module ActiveRecord
       #   task.attributes_before_type_cast
       #   # => {"id"=>nil, "title"=>nil, "is_done"=>true, "completed_on"=>"2012-10-21", "created_at"=>nil, "updated_at"=>nil}
       def attributes_before_type_cast
-        @raw_attributes
+        @attributes.values_before_type_cast
       end
 
       private
+        # Dispatch target for <tt>*_before_type_cast</tt> attribute methods.
+        def attribute_before_type_cast(attr_name)
+          @attributes[attr_name].value_before_type_cast
+        end
 
-      # Handle *_before_type_cast for method_missing.
-      def attribute_before_type_cast(attribute_name)
-        read_attribute_before_type_cast(attribute_name)
-      end
+        def attribute_for_database(attr_name)
+          @attributes[attr_name].value_for_database
+        end
+
+        def attribute_came_from_user?(attr_name)
+          @attributes[attr_name].came_from_user?
+        end
     end
   end
 end

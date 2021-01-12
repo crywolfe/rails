@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 
 module ActionController
   class LogSubscriber < ActiveSupport::LogSubscriber
@@ -10,66 +11,63 @@ module ActionController
       params  = payload[:params].except(*INTERNAL_PARAMS)
       format  = payload[:format]
       format  = format.to_s.upcase if format.is_a?(Symbol)
+      format  = "*/*" if format.nil?
 
       info "Processing by #{payload[:controller]}##{payload[:action]} as #{format}"
       info "  Parameters: #{params.inspect}" unless params.empty?
     end
 
     def process_action(event)
-      return unless logger.info?
+      info do
+        payload = event.payload
+        additions = ActionController::Base.log_process_action(payload)
+        status = payload[:status]
 
-      payload   = event.payload
-      additions = ActionController::Base.log_process_action(payload)
+        if status.nil? && (exception_class_name = payload[:exception].first)
+          status = ActionDispatch::ExceptionWrapper.status_code_for_exception(exception_class_name)
+        end
 
-      status = payload[:status]
-      if status.nil? && payload[:exception].present?
-        exception_class_name = payload[:exception].first
-        status = ActionDispatch::ExceptionWrapper.status_code_for_exception(exception_class_name)
+        additions << "Allocations: #{event.allocations}"
+
+        message = +"Completed #{status} #{Rack::Utils::HTTP_STATUS_CODES[status]} in #{event.duration.round}ms"
+        message << " (#{additions.join(" | ")})"
+        message << "\n\n" if defined?(Rails.env) && Rails.env.development?
+
+        message
       end
-      message = "Completed #{status} #{Rack::Utils::HTTP_STATUS_CODES[status]} in #{event.duration.round}ms"
-      message << " (#{additions.join(" | ")})" unless additions.blank?
-
-      info(message)
     end
 
     def halted_callback(event)
-      info("Filter chain halted as #{event.payload[:filter].inspect} rendered or redirected")
+      info { "Filter chain halted as #{event.payload[:filter].inspect} rendered or redirected" }
     end
 
     def send_file(event)
-      info("Sent file #{event.payload[:path]} (#{event.duration.round(1)}ms)")
+      info { "Sent file #{event.payload[:path]} (#{event.duration.round(1)}ms)" }
     end
 
     def redirect_to(event)
-      info("Redirected to #{event.payload[:location]}")
+      info { "Redirected to #{event.payload[:location]}" }
     end
 
     def send_data(event)
-      info("Sent data #{event.payload[:filename]} (#{event.duration.round(1)}ms)")
+      info { "Sent data #{event.payload[:filename]} (#{event.duration.round(1)}ms)" }
     end
 
     def unpermitted_parameters(event)
-      unpermitted_keys = event.payload[:keys]
-      debug("Unpermitted parameter#{'s' if unpermitted_keys.size > 1}: #{unpermitted_keys.join(", ")}")
-    end
-
-    def deep_munge(event)
-      message = "Value for params[:#{event.payload[:keys].join('][:')}] was set "\
-                "to nil, because it was one of [], [null] or [null, null, ...]. "\
-                "Go to http://guides.rubyonrails.org/security.html#unsafe-query-generation "\
-                "for more information."\
-
-      debug(message)
+      debug do
+        unpermitted_keys = event.payload[:keys]
+        color("Unpermitted parameter#{'s' if unpermitted_keys.size > 1}: #{unpermitted_keys.map { |e| ":#{e}" }.join(", ")}", RED)
+      end
     end
 
     %w(write_fragment read_fragment exist_fragment?
        expire_fragment expire_page write_page).each do |method|
       class_eval <<-METHOD, __FILE__, __LINE__ + 1
         def #{method}(event)
-          return unless logger.info?
-          key_or_path = event.payload[:key] || event.payload[:path]
+          return unless logger.info? && ActionController::Base.enable_fragment_cache_logging
+          key         = ActiveSupport::Cache.expand_cache_key(event.payload[:key] || event.payload[:path])
           human_name  = #{method.to_s.humanize.inspect}
-          info("\#{human_name} \#{key_or_path} (\#{event.duration.round(1)}ms)")
+          info("\#{human_name} \#{key} (\#{event.duration.round(1)}ms)")
         end
       METHOD
     end

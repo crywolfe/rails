@@ -1,11 +1,14 @@
-require 'active_support/core_ext/hash/except'
-require 'active_support/core_ext/module/introspection'
+# frozen_string_literal: true
+
+require "active_support/core_ext/hash/except"
+require "active_support/core_ext/module/introspection"
+require "active_support/core_ext/module/redefine_method"
 
 module ActiveModel
   class Name
     include Comparable
 
-    attr_reader :singular, :plural, :element, :collection,
+    attr_accessor :singular, :plural, :element, :collection,
       :singular_route_key, :route_key, :param_key, :i18n_key,
       :name
 
@@ -46,7 +49,7 @@ module ActiveModel
     # :method: <=>
     #
     # :call-seq:
-    #   ==(other)
+    #   <=>(other)
     #
     # Equivalent to <tt>String#<=></tt>.
     #
@@ -108,6 +111,22 @@ module ActiveModel
     #   BlogPost.model_name.eql?('Blog Post') # => false
 
     ##
+    # :method: match?
+    #
+    # :call-seq:
+    #   match?(regexp)
+    #
+    # Equivalent to <tt>String#match?</tt>. Match the class name against the
+    # given regexp. Returns +true+ if there is a match, otherwise +false+.
+    #
+    #   class BlogPost
+    #     extend ActiveModel::Naming
+    #   end
+    #
+    #   BlogPost.model_name.match?(/Post/) # => true
+    #   BlogPost.model_name.match?(/\d/) # => false
+
+    ##
     # :method: to_s
     #
     # :call-seq:
@@ -128,12 +147,13 @@ module ActiveModel
     #   to_str()
     #
     # Equivalent to +to_s+.
-    delegate :==, :===, :<=>, :=~, :"!~", :eql?, :to_s,
-             :to_str, to: :name
+    delegate :==, :===, :<=>, :=~, :"!~", :eql?, :match?, :to_s,
+             :to_str, :as_json, to: :name
 
     # Returns a new ActiveModel::Name instance. By default, the +namespace+
     # and +name+ option will take the namespace and name of the given class
     # respectively.
+    # Use +locale+ argument for singularize and pluralize model name.
     #
     #   module Foo
     #     class Bar
@@ -142,27 +162,27 @@ module ActiveModel
     #
     #   ActiveModel::Name.new(Foo::Bar).to_s
     #   # => "Foo::Bar"
-    def initialize(klass, namespace = nil, name = nil)
+    def initialize(klass, namespace = nil, name = nil, locale = :en)
       @name = name || klass.name
 
       raise ArgumentError, "Class name cannot be blank. You need to supply a name argument when anonymous class given" if @name.blank?
 
-      @unnamespaced = @name.sub(/^#{namespace.name}::/, '') if namespace
+      @unnamespaced = @name.delete_prefix("#{namespace.name}::") if namespace
       @klass        = klass
       @singular     = _singularize(@name)
-      @plural       = ActiveSupport::Inflector.pluralize(@singular)
+      @plural       = ActiveSupport::Inflector.pluralize(@singular, locale)
       @element      = ActiveSupport::Inflector.underscore(ActiveSupport::Inflector.demodulize(@name))
       @human        = ActiveSupport::Inflector.humanize(@element)
       @collection   = ActiveSupport::Inflector.tableize(@name)
       @param_key    = (namespace ? _singularize(@unnamespaced) : @singular)
       @i18n_key     = @name.underscore.to_sym
 
-      @route_key          = (namespace ? ActiveSupport::Inflector.pluralize(@param_key) : @plural.dup)
-      @singular_route_key = ActiveSupport::Inflector.singularize(@route_key)
+      @route_key          = (namespace ? ActiveSupport::Inflector.pluralize(@param_key, locale) : @plural.dup)
+      @singular_route_key = ActiveSupport::Inflector.singularize(@route_key, locale)
       @route_key << "_index" if @plural == @singular
     end
 
-    # Transform the model name into a more humane format, using I18n. By default,
+    # Transform the model name into a more human format, using I18n. By default,
     # it will underscore then humanize the class name.
     #
     #   class BlogPost
@@ -172,7 +192,7 @@ module ActiveModel
     #   BlogPost.model_name.human # => "Blog post"
     #
     # Specify +options+ with additional translating options.
-    def human(options={})
+    def human(options = {})
       return @human unless @klass.respond_to?(:lookup_ancestors) &&
                            @klass.respond_to?(:i18n_scope)
 
@@ -184,14 +204,13 @@ module ActiveModel
       defaults << @human
 
       options = { scope: [@klass.i18n_scope, :models], count: 1, default: defaults }.merge!(options.except(:default))
-      I18n.translate(defaults.shift, options)
+      I18n.translate(defaults.shift, **options)
     end
 
     private
-
-    def _singularize(string, replacement='_')
-      ActiveSupport::Inflector.underscore(string).tr('/', replacement)
-    end
+      def _singularize(string)
+        ActiveSupport::Inflector.underscore(string).tr("/", "_")
+      end
   end
 
   # == Active \Model \Naming
@@ -211,15 +230,20 @@ module ActiveModel
   #   BookModule::BookCover.model_name.i18n_key  # => :"book_module/book_cover"
   #
   # Providing the functionality that ActiveModel::Naming provides in your object
-  # is required to pass the Active Model Lint test. So either extending the
+  # is required to pass the \Active \Model Lint test. So either extending the
   # provided method below, or rolling your own is required.
   module Naming
+    def self.extended(base) #:nodoc:
+      base.silence_redefinition_of_method :model_name
+      base.delegate :model_name, to: :class
+    end
+
     # Returns an ActiveModel::Name object for module. It can be
     # used to retrieve all kinds of naming-related information
     # (See ActiveModel::Name for more information).
     #
     #   class Person
-    #     include ActiveModel::Model
+    #     extend ActiveModel::Naming
     #   end
     #
     #   Person.model_name.name     # => "Person"
@@ -228,7 +252,7 @@ module ActiveModel
     #   Person.model_name.plural   # => "people"
     def model_name
       @_model_name ||= begin
-        namespace = self.parents.detect do |n|
+        namespace = module_parents.detect do |n|
           n.respond_to?(:use_relative_model_naming?) && n.use_relative_model_naming?
         end
         ActiveModel::Name.new(self, namespace)
@@ -299,12 +323,10 @@ module ActiveModel
     end
 
     def self.model_name_from_record_or_class(record_or_class) #:nodoc:
-      if record_or_class.respond_to?(:model_name)
-        record_or_class.model_name
-      elsif record_or_class.respond_to?(:to_model)
-        record_or_class.to_model.class.model_name
+      if record_or_class.respond_to?(:to_model)
+        record_or_class.to_model.model_name
       else
-        record_or_class.class.model_name
+        record_or_class.model_name
       end
     end
     private_class_method :model_name_from_record_or_class

@@ -1,40 +1,53 @@
-require 'active_record/connection_adapters/postgresql/cast'
+# frozen_string_literal: true
 
 module ActiveRecord
   module ConnectionAdapters
-    # PostgreSQL-specific extensions to column definitions in a table.
-    class PostgreSQLColumn < Column #:nodoc:
-      attr_accessor :array
+    module PostgreSQL
+      class Column < ConnectionAdapters::Column # :nodoc:
+        delegate :oid, :fmod, to: :sql_type_metadata
 
-      def initialize(name, default, cast_type, sql_type = nil, null = true, default_function = nil)
-        if sql_type =~ /\[\]$/
-          @array = true
-          super(name, default, cast_type, sql_type[0..sql_type.length - 3], null)
-        else
-          @array = false
-          super(name, default, cast_type, sql_type, null)
+        def initialize(*, serial: nil, **)
+          super
+          @serial = serial
         end
 
-        @default_function = default_function
-      end
+        def serial?
+          @serial
+        end
 
-      # :stopdoc:
-      class << self
-        include PostgreSQL::Cast
+        def array
+          sql_type_metadata.sql_type.end_with?("[]")
+        end
+        alias :array? :array
 
-        # Loads pg_array_parser if available. String parsing can be
-        # performed quicker by a native extension, which will not create
-        # a large amount of Ruby objects that will need to be garbage
-        # collected. pg_array_parser has a C and Java extension
-        begin
-          require 'pg_array_parser'
-          include PgArrayParser
-        rescue LoadError
-          require 'active_record/connection_adapters/postgresql/array_parser'
-          include PostgreSQL::ArrayParser
+        def sql_type
+          super.delete_suffix("[]")
+        end
+
+        def init_with(coder)
+          @serial = coder["serial"]
+          super
+        end
+
+        def encode_with(coder)
+          coder["serial"] = @serial
+          super
+        end
+
+        def ==(other)
+          other.is_a?(Column) &&
+            super &&
+            serial? == other.serial?
+        end
+        alias :eql? :==
+
+        def hash
+          Column.hash ^
+            super.hash ^
+            serial?.hash
         end
       end
-      # :startdoc:
     end
+    PostgreSQLColumn = PostgreSQL::Column # :nodoc:
   end
 end

@@ -1,3 +1,5 @@
+**DO NOT READ THIS FILE ON GITHUB, GUIDES ARE PUBLISHED ON https://guides.rubyonrails.org.**
+
 Ruby on Rails 4.1 Release Notes
 ===============================
 
@@ -8,10 +10,10 @@ Highlights in Rails 4.1:
 * Action Pack variants
 * Action Mailer previews
 
-These release notes cover only the major changes. To know about various bug
-fixes and changes, please refer to the change logs or check out the
-[list of commits](https://github.com/rails/rails/commits/master) in the main
-Rails repository on GitHub.
+These release notes cover only the major changes. To learn about various bug
+fixes and changes, please refer to the change logs or check out the [list of
+commits](https://github.com/rails/rails/commits/4-1-stable) in the main Rails
+repository on GitHub.
 
 --------------------------------------------------------------------------------
 
@@ -42,19 +44,19 @@ spring environments.
 
 **Running rake tasks:**
 
-```
-bin/rake test:models
+```bash
+$ bin/rake test:models
 ```
 
 **Running a Rails command:**
 
-```
-bin/rails console
+```bash
+$ bin/rails console
 ```
 
 **Spring introspection:**
 
-```
+```bash
 $ bin/spring status
 Spring is running:
 
@@ -136,7 +138,7 @@ end
 
 ### Action Mailer Previews
 
-Action Mailer previews provide a way to visually see how emails look by visiting
+Action Mailer previews provide a way to see how emails look by visiting
 a special URL that renders them.
 
 You implement a preview class whose methods return the mail object you'd like
@@ -157,7 +159,7 @@ By default, these preview classes live in `test/mailers/previews`.
 This can be configured using the `preview_path` option.
 
 See its
-[documentation](http://api.rubyonrails.org/v4.1.0/classes/ActionMailer/Base.html)
+[documentation](https://api.rubyonrails.org/v4.1.0/classes/ActionMailer/Base.html#class-ActionMailer::Base-label-Previewing+emails)
 for a detailed write up.
 
 ### Active Record enums
@@ -213,12 +215,12 @@ class Todo < ActiveRecord::Base
     end
 
     def latest_event
-      ...
+      # ...
     end
 
     private
       def some_internal_method
-        ...
+        # ...
       end
   end
 end
@@ -229,7 +231,7 @@ extending it with `ActiveSupport::Concern`, then mixing it in to the
 `Todo` class.
 
 See its
-[documentation](http://api.rubyonrails.org/v4.1.0/classes/Module/Concerning.html)
+[documentation](https://api.rubyonrails.org/v4.1.0/classes/Module/Concerning.html)
 for a detailed write up and the intended use cases.
 
 ### CSRF protection from remote `<script>` tags
@@ -272,7 +274,7 @@ for detailed changes.
 * The [Spring application
   preloader](https://github.com/rails/spring) is now installed
   by default for new applications. It uses the development group of
-  the Gemfile, so will not be installed in
+  the `Gemfile`, so will not be installed in
   production. ([Pull Request](https://github.com/rails/rails/pull/12958))
 
 * `BACKTRACE` environment variable to show unfiltered backtraces for test
@@ -315,15 +317,15 @@ for detailed changes.
 
 * Removed deprecated constants from Action Controller:
 
-  | Removed                            | Successor                       |
-  |:-----------------------------------|:--------------------------------|
-  | ActionController::AbstractRequest  | ActionDispatch::Request         |
-  | ActionController::Request          | ActionDispatch::Request         |
-  | ActionController::AbstractResponse | ActionDispatch::Response        |
-  | ActionController::Response         | ActionDispatch::Response        |
-  | ActionController::Routing          | ActionDispatch::Routing         |
-  | ActionController::Integration      | ActionDispatch::Integration     |
-  | ActionController::IntegrationTest  | ActionDispatch::IntegrationTest |
+| Removed                            | Successor                       |
+|:-----------------------------------|:--------------------------------|
+| ActionController::AbstractRequest  | ActionDispatch::Request         |
+| ActionController::Request          | ActionDispatch::Request         |
+| ActionController::AbstractResponse | ActionDispatch::Response        |
+| ActionController::Response         | ActionDispatch::Response        |
+| ActionController::Routing          | ActionDispatch::Routing         |
+| ActionController::Integration      | ActionDispatch::Integration     |
+| ActionController::IntegrationTest  | ActionDispatch::IntegrationTest |
 
 ### Notable changes
 
@@ -717,7 +719,7 @@ for detailed changes.
   responsibilities within a
   class. ([Commit](https://github.com/rails/rails/commit/1eee0ca6de975b42524105a59e0521d18b38ab81))
 
-* Added `Object#presence_in` to simplify value whitelisting.
+* Added `Object#presence_in` to simplify adding values to a permitted list.
   ([Commit](https://github.com/rails/rails/commit/4edca106daacc5a159289eae255207d160f22396))
 
 
@@ -725,6 +727,6 @@ Credits
 -------
 
 See the
-[full list of contributors to Rails](http://contributors.rubyonrails.org/) for
+[full list of contributors to Rails](https://contributors.rubyonrails.org/) for
 the many people who spent many hours making Rails, the stable and robust
 framework it is. Kudos to all of them.

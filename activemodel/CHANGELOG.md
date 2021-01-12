@@ -1,12 +1,11 @@
-*   Add plural and singular form for length validator's default messages.
+*   Add `in: range`  parameter to `numericality` validator.
 
-    *Abd ar-Rahman Hamid*
+   *Michal Papis*
 
-*   Introduce `validate` as an alias for `valid?`.
+*   Add `locale` argument to `ActiveModel::Name#initialize` to be used to generate the `singular`,
+   `plural`, `route_key` and `singular_route_key` values.
 
-    This is more intuitive when you want to run validations but don't care about
-    the return value.
+   *Lukas Pokorny*
 
-    *Henrik Nyh*
 
-Please check [4-1-stable](https://github.com/rails/rails/blob/4-1-stable/activemodel/CHANGELOG.md) for previous changes.
+Please check [6-1-stable](https://github.com/rails/rails/blob/6-1-stable/activemodel/CHANGELOG.md) for previous changes.

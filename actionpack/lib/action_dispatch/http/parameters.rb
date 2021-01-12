@@ -1,73 +1,117 @@
-require 'active_support/core_ext/hash/keys'
-require 'active_support/core_ext/hash/indifferent_access'
+# frozen_string_literal: true
 
 module ActionDispatch
   module Http
     module Parameters
-      PARAMETERS_KEY = 'action_dispatch.request.path_parameters'
+      extend ActiveSupport::Concern
+
+      PARAMETERS_KEY = "action_dispatch.request.path_parameters"
+
+      DEFAULT_PARSERS = {
+        Mime[:json].symbol => -> (raw_post) {
+          data = ActiveSupport::JSON.decode(raw_post)
+          data.is_a?(Hash) ? data : { _json: data }
+        }
+      }
+
+      # Raised when raw data from the request cannot be parsed by the parser
+      # defined for request's content MIME type.
+      class ParseError < StandardError
+        def initialize
+          super($!.message)
+        end
+      end
+
+      included do
+        class << self
+          # Returns the parameter parsers.
+          attr_reader :parameter_parsers
+        end
+
+        self.parameter_parsers = DEFAULT_PARSERS
+      end
+
+      module ClassMethods
+        # Configure the parameter parser for a given MIME type.
+        #
+        # It accepts a hash where the key is the symbol of the MIME type
+        # and the value is a proc.
+        #
+        #     original_parsers = ActionDispatch::Request.parameter_parsers
+        #     xml_parser = -> (raw_post) { Hash.from_xml(raw_post) || {} }
+        #     new_parsers = original_parsers.merge(xml: xml_parser)
+        #     ActionDispatch::Request.parameter_parsers = new_parsers
+        def parameter_parsers=(parsers)
+          @parameter_parsers = parsers.transform_keys { |key| key.respond_to?(:symbol) ? key.symbol : key }
+        end
+      end
 
       # Returns both GET and POST \parameters in a single hash.
       def parameters
-        @env["action_dispatch.request.parameters"] ||= begin
-          params = begin
-            request_parameters.merge(query_parameters)
-          rescue EOFError
-            query_parameters.dup
-          end
-          params.merge!(path_parameters)
-        end
+        params = get_header("action_dispatch.request.parameters")
+        return params if params
+
+        params = begin
+                   request_parameters.merge(query_parameters)
+                 rescue EOFError
+                   query_parameters.dup
+                 end
+        params.merge!(path_parameters)
+        set_header("action_dispatch.request.parameters", params)
+        params
       end
       alias :params :parameters
 
       def path_parameters=(parameters) #:nodoc:
-        @env.delete('action_dispatch.request.parameters')
-        @env[PARAMETERS_KEY] = parameters
-      end
+        delete_header("action_dispatch.request.parameters")
 
-      # The same as <tt>path_parameters</tt> with explicitly symbolized keys.
-      def symbolized_path_parameters
-        path_parameters
+        parameters = Request::Utils.set_binary_encoding(self, parameters, parameters[:controller], parameters[:action])
+        # If any of the path parameters has an invalid encoding then
+        # raise since it's likely to trigger errors further on.
+        Request::Utils.check_param_encoding(parameters)
+
+        set_header PARAMETERS_KEY, parameters
+      rescue Rack::Utils::ParameterTypeError, Rack::Utils::InvalidParameterError => e
+        raise ActionController::BadRequest.new("Invalid path parameters: #{e.message}")
       end
 
       # Returns a hash with the \parameters used to form the \path of the request.
       # Returned hash keys are strings:
       #
       #   {'action' => 'my_action', 'controller' => 'my_controller'}
-      #
-      # See <tt>symbolized_path_parameters</tt> for symbolized keys.
       def path_parameters
-        @env[PARAMETERS_KEY] ||= {}
+        get_header(PARAMETERS_KEY) || set_header(PARAMETERS_KEY, {})
       end
 
-    private
+      private
+        def parse_formatted_parameters(parsers)
+          return yield if content_length.zero? || content_mime_type.nil?
 
-      # Convert nested Hash to HashWithIndifferentAccess
-      # and UTF-8 encode both keys and values in nested Hash.
-      #
-      # TODO: Validate that the characters are UTF-8. If they aren't,
-      # you'll get a weird error down the road, but our form handling
-      # should really prevent that from happening
-      def normalize_encode_params(params)
-        case params
-        when String
-          params.force_encoding(Encoding::UTF_8).encode!
-        when Hash
-          if params.has_key?(:tempfile)
-            UploadedFile.new(params)
-          else
-            params.each_with_object({}) do |(key, val), new_hash|
-              new_key = key.is_a?(String) ? key.dup.force_encoding(Encoding::UTF_8).encode! : key
-              new_hash[new_key] = if val.is_a?(Array)
-                val.map! { |el| normalize_encode_params(el) }
-              else
-                normalize_encode_params(val)
-              end
-            end.with_indifferent_access
+          strategy = parsers.fetch(content_mime_type.symbol) { return yield }
+
+          begin
+            strategy.call(raw_post)
+          rescue # JSON or Ruby code block errors.
+            log_parse_error_once
+            raise ParseError
           end
-        else
-          params
         end
-      end
+
+        def log_parse_error_once
+          @parse_error_logged ||= begin
+            parse_logger = logger || ActiveSupport::Logger.new($stderr)
+            parse_logger.debug <<~MSG.chomp
+              Error occurred while parsing request parameters.
+              Contents:
+
+              #{raw_post}
+            MSG
+          end
+        end
+
+        def params_parsers
+          ActionDispatch::Request.parameter_parsers
+        end
     end
   end
 end

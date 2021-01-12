@@ -1,5 +1,7 @@
-require 'generators/generators_test_helper'
-require 'rails/generators/rails/helper/helper_generator'
+# frozen_string_literal: true
+
+require "generators/generators_test_helper"
+require "rails/generators/rails/helper/helper_generator"
 
 ObjectHelper = Class.new
 AnotherObjectHelperTest = Class.new
@@ -13,24 +15,9 @@ class HelperGeneratorTest < Rails::Generators::TestCase
     assert_file "app/helpers/admin_helper.rb", /module AdminHelper/
   end
 
-  def test_invokes_default_test_framework
-    run_generator
-    assert_file "test/helpers/admin_helper_test.rb", /class AdminHelperTest < ActionView::TestCase/
-  end
-
-  def test_logs_if_the_test_framework_cannot_be_found
-    content = run_generator ["admin", "--test-framework=rspec"]
-    assert_match(/rspec \[not found\]/, content)
-  end
-
   def test_check_class_collision
-    content = capture(:stderr){ run_generator ["object"] }
+    content = capture(:stderr) { run_generator ["object"] }
     assert_match(/The name 'ObjectHelper' is either already used in your application or reserved/, content)
-  end
-
-  def test_check_class_collision_on_tests
-    content = capture(:stderr){ run_generator ["another_object"] }
-    assert_match(/The name 'AnotherObjectHelperTest' is either already used in your application or reserved/, content)
   end
 
   def test_namespaced_and_not_namespaced_helpers
@@ -43,12 +30,17 @@ class HelperGeneratorTest < Rails::Generators::TestCase
     require "#{destination_root}/app/helpers/products_helper"
 
     assert_nothing_raised do
-      begin
-        run_generator ["admin::products"]
-      ensure
-        # cleanup
-        Object.send(:remove_const, :ProductsHelper)
-      end
+      run_generator ["admin::products"]
+    ensure
+      # cleanup
+      Object.send(:remove_const, :ProductsHelper)
     end
+  end
+
+  def test_helper_suffix_is_not_duplicated
+    run_generator %w(products_helper)
+
+    assert_no_file "app/helpers/products_helper_helper.rb"
+    assert_file "app/helpers/products_helper.rb"
   end
 end

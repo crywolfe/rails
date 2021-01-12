@@ -1,20 +1,22 @@
-require 'active_support/core_ext/hash/keys'
-require "set"
+# frozen_string_literal: true
+
+require "active_support/core_ext/hash/keys"
 
 module ActiveRecord
   class Relation
     class HashMerger # :nodoc:
       attr_reader :relation, :hash
 
-      def initialize(relation, hash)
+      def initialize(relation, hash, rewhere = nil)
         hash.assert_valid_keys(*Relation::VALUE_METHODS)
 
         @relation = relation
         @hash     = hash
+        @rewhere  = rewhere
       end
 
       def merge
-        Merger.new(relation, other).merge
+        Merger.new(relation, other, @rewhere).merge
       end
 
       # Applying values to a relation has some side effects. E.g.
@@ -22,20 +24,19 @@ module ActiveRecord
       # build a relation to merge in rather than directly merging
       # the values.
       def other
-        other = Relation.create(relation.klass, relation.table)
-        hash.each { |k, v|
-          if k == :joins
-            if Hash === v
-              other.joins!(v)
-            else
-              other.joins!(*v)
-            end
-          elsif k == :select
-            other._select!(v)
+        other = Relation.create(
+          relation.klass,
+          table: relation.table,
+          predicate_builder: relation.predicate_builder
+        )
+        hash.each do |k, v|
+          k = :_select if k == :select
+          if Array === v
+            other.public_send("#{k}!", *v)
           else
-            other.send("#{k}!", v)
+            other.public_send("#{k}!", v)
           end
-        }
+        end
         other
       end
     end
@@ -43,15 +44,16 @@ module ActiveRecord
     class Merger # :nodoc:
       attr_reader :relation, :values, :other
 
-      def initialize(relation, other)
+      def initialize(relation, other, rewhere = nil)
         @relation = relation
         @values   = other.values
         @other    = other
+        @rewhere  = rewhere
       end
 
-      NORMAL_VALUES = Relation::SINGLE_VALUE_METHODS +
-                      Relation::MULTI_VALUE_METHODS -
-                      [:joins, :where, :order, :bind, :reverse_order, :lock, :create_with, :reordering, :from] # :nodoc:
+      NORMAL_VALUES = Relation::VALUE_METHODS -
+                      Relation::CLAUSE_METHODS -
+                      [:includes, :preload, :joins, :left_outer_joins, :order, :reverse_order, :lock, :create_with, :reordering] # :nodoc:
 
       def normal_values
         NORMAL_VALUES
@@ -68,115 +70,116 @@ module ActiveRecord
             if name == :select
               relation._select!(*value)
             else
-              relation.send("#{name}!", *value)
+              relation.public_send("#{name}!", *value)
             end
           end
         end
 
         merge_multi_values
         merge_single_values
+        merge_clauses
+        merge_preloads
         merge_joins
+        merge_outer_joins
 
         relation
       end
 
       private
+        def merge_preloads
+          return if other.preload_values.empty? && other.includes_values.empty?
 
-      def merge_joins
-        return if values[:joins].blank?
+          if other.klass == relation.klass
+            relation.preload_values |= other.preload_values unless other.preload_values.empty?
+            relation.includes_values |= other.includes_values unless other.includes_values.empty?
+          else
+            reflection = relation.klass.reflect_on_all_associations.find do |r|
+              r.class_name == other.klass.name
+            end || return
 
-        if other.klass == relation.klass
-          relation.joins!(*values[:joins])
-        else
-          joins_dependency, rest = values[:joins].partition do |join|
-            case join
-            when Hash, Symbol, Array
-              true
-            else
-              false
+            unless other.preload_values.empty?
+              relation.preload! reflection.name => other.preload_values
+            end
+
+            unless other.includes_values.empty?
+              relation.includes! reflection.name => other.includes_values
             end
           end
-
-          join_dependency = ActiveRecord::Associations::JoinDependency.new(other.klass,
-                                                                           joins_dependency,
-                                                                           [])
-          relation.joins! rest
-
-          @relation = relation.joins join_dependency
         end
-      end
 
-      def merge_multi_values
-        lhs_wheres = relation.where_values
-        rhs_wheres = values[:where] || []
+        def merge_joins
+          return if other.joins_values.empty?
 
-        lhs_binds  = relation.bind_values
-        rhs_binds  = values[:bind] || []
-
-        removed, kept = partition_overwrites(lhs_wheres, rhs_wheres)
-
-        where_values = kept + rhs_wheres
-        bind_values  = filter_binds(lhs_binds, removed) + rhs_binds
-
-        conn = relation.klass.connection
-        bv_index = 0
-        where_values.map! do |node|
-          if Arel::Nodes::Equality === node && Arel::Nodes::BindParam === node.right
-            substitute = conn.substitute_at(bind_values[bv_index].first, bv_index)
-            bv_index += 1
-            Arel::Nodes::Equality.new(node.left, substitute)
+          if other.klass == relation.klass
+            relation.joins_values |= other.joins_values
           else
-            node
+            associations, others = other.joins_values.partition do |join|
+              case join
+              when Hash, Symbol, Array; true
+              end
+            end
+
+            join_dependency = other.construct_join_dependency(
+              associations, Arel::Nodes::InnerJoin
+            )
+            relation.joins!(join_dependency, *others)
           end
         end
 
-        relation.where_values = where_values
-        relation.bind_values  = bind_values
+        def merge_outer_joins
+          return if other.left_outer_joins_values.empty?
 
-        if values[:reordering]
-          # override any order specified in the original relation
-          relation.reorder! values[:order]
-        elsif values[:order]
-          # merge in order_values from relation
-          relation.order! values[:order]
+          if other.klass == relation.klass
+            relation.left_outer_joins_values |= other.left_outer_joins_values
+          else
+            associations, others = other.left_outer_joins_values.partition do |join|
+              case join
+              when Hash, Symbol, Array; true
+              end
+            end
+
+            join_dependency = other.construct_join_dependency(
+              associations, Arel::Nodes::OuterJoin
+            )
+            relation.left_outer_joins!(join_dependency, *others)
+          end
         end
 
-        relation.extend(*values[:extending]) unless values[:extending].blank?
-      end
+        def merge_multi_values
+          if other.reordering_value
+            # override any order specified in the original relation
+            relation.reorder!(*other.order_values)
+          elsif other.order_values.any?
+            # merge in order_values from relation
+            relation.order!(*other.order_values)
+          end
 
-      def merge_single_values
-        relation.from_value          = values[:from] unless relation.from_value
-        relation.lock_value          = values[:lock] unless relation.lock_value
-
-        unless values[:create_with].blank?
-          relation.create_with_value = (relation.create_with_value || {}).merge(values[:create_with])
-        end
-      end
-
-      def filter_binds(lhs_binds, removed_wheres)
-        return lhs_binds if removed_wheres.empty?
-
-        set = Set.new removed_wheres.map { |x| x.left.name.to_s }
-        lhs_binds.dup.delete_if { |col,_| set.include? col.name }
-      end
-
-      # Remove equalities from the existing relation with a LHS which is
-      # present in the relation being merged in.
-      # returns [things_to_remove, things_to_keep]
-      def partition_overwrites(lhs_wheres, rhs_wheres)
-        if lhs_wheres.empty? || rhs_wheres.empty?
-          return [[], lhs_wheres]
+          extensions = other.extensions - relation.extensions
+          relation.extending!(*extensions) if extensions.any?
         end
 
-        nodes = rhs_wheres.find_all do |w|
-          w.respond_to?(:operator) && w.operator == :==
-        end
-        seen = Set.new(nodes) { |node| node.left }
+        def merge_single_values
+          relation.lock_value ||= other.lock_value if other.lock_value
 
-        lhs_wheres.partition do |w|
-          w.respond_to?(:operator) && w.operator == :== && seen.include?(w.left)
+          unless other.create_with_value.blank?
+            relation.create_with_value = (relation.create_with_value || {}).merge(other.create_with_value)
+          end
         end
-      end
+
+        def merge_clauses
+          relation.from_clause = other.from_clause if replace_from_clause?
+
+          where_clause = relation.where_clause.merge(other.where_clause, @rewhere)
+          relation.where_clause = where_clause unless where_clause.empty?
+
+          having_clause = relation.having_clause.merge(other.having_clause)
+          relation.having_clause = having_clause unless having_clause.empty?
+        end
+
+        def replace_from_clause?
+          relation.from_clause.empty? && !other.from_clause.empty? &&
+            relation.klass.base_class == other.klass.base_class
+        end
     end
   end
 end

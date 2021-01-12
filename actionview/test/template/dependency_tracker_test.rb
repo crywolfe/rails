@@ -1,7 +1,7 @@
-# encoding: utf-8
+# frozen_string_literal: true
 
-require 'abstract_unit'
-require 'action_view/dependency_tracker'
+require "abstract_unit"
+require "action_view/dependency_tracker"
 
 class NeckbeardTracker
   def self.call(name, template)
@@ -17,8 +17,8 @@ class FakeTemplate
   end
 end
 
-Neckbeard = lambda {|template| template.source }
-Bowtie = lambda {|template| template.source }
+Neckbeard = lambda { |template, source| source }
+Bowtie = lambda { |template, source| source }
 
 class DependencyTrackerTest < ActionView::TestCase
   def tracker
@@ -31,6 +31,7 @@ class DependencyTrackerTest < ActionView::TestCase
   end
 
   def teardown
+    ActionView::Template.unregister_template_handler :neckbeard
     tracker.remove_tracker(:neckbeard)
   end
 
@@ -57,6 +58,20 @@ class ERBTrackerTest < Minitest::Test
     tracker = make_tracker("messages/_message123", template)
 
     assert_equal ["messages/message123"], tracker.dependencies
+  end
+
+  def test_dependency_of_template_partial_with_layout
+    template = FakeTemplate.new("<%# render partial: 'messages/show', layout: 'messages/layout' %>", :erb)
+    tracker = make_tracker("multiple/_dependencies", template)
+
+    assert_equal ["messages/layout", "messages/show"], tracker.dependencies
+  end
+
+  def test_dependency_of_template_layout_standalone
+    template = FakeTemplate.new("<%# render layout: 'messages/layout' do %>", :erb)
+    tracker = make_tracker("messages/layout", template)
+
+    assert_equal ["messages/layout"], tracker.dependencies
   end
 
   def test_finds_dependency_in_correct_directory
@@ -176,5 +191,15 @@ class ERBTrackerTest < Minitest::Test
       "events/event",
       "comments/comment"
     ], tracker.dependencies
+  end
+
+  def test_dependencies_with_interpolation
+    template = FakeTemplate.new(%q{
+      <%# render "double/#{quote}" %>
+      <%# render 'single/#{quote}' %>
+    }, :erb)
+    tracker = make_tracker("interpolation/_string", template)
+
+    assert_equal ["single/\#{quote}"], tracker.dependencies
   end
 end
